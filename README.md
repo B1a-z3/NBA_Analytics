@@ -42,14 +42,27 @@ tests/                          Unit tests for validation + feature logic (no DB
 ## Setup
 
 1. **Start Postgres** (schema auto-applies via `db/schema.sql` on first boot):
+   ```powershell
+   # PowerShell (Windows)
+   Copy-Item .env.example .env
+   docker compose up -d postgres
+   ```
    ```bash
+   # macOS/Linux
    cp .env.example .env
    docker compose up -d postgres
    ```
 
 2. **Install Python deps:**
+   ```powershell
+   # PowerShell (Windows)
+   python -m venv venv
+   venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
    ```bash
-   python -m venv venv && source venv/bin/activate   # or venv\Scripts\activate on Windows
+   # macOS/Linux
+   python -m venv venv && source venv/bin/activate
    pip install -r requirements.txt
    ```
 

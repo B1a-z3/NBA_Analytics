@@ -15,6 +15,7 @@ Run:
     python ingestion/load_kaggle_backfill.py
 """
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def _read_csv(name: str) -> pd.DataFrame:
             f"Expected Kaggle export at {path}. Download the bulk dataset "
             f"from Kaggle and place its CSVs in {DATA_DIR}."
         )
-    return pd.read_csv(path)
+    return pd.read_csv(path, low_memory=False)
 
 
 def load_teams(engine):
@@ -91,6 +92,17 @@ def load_players(engine):
     and filled in separately by ingestion/enrich_player_bio.py (nba_api),
     since aging-curve analysis and the decline model's age_years feature
     need birth_date.
+
+    players.csv is also NOT a complete player roster -- games_details.csv
+    (the box-score source) references some player_ids that never appear in
+    players.csv at all (likely short call-ups / rare appearances the Kaggle
+    export's players.csv snapshot missed). Loading player_game_stats would
+    otherwise violate its FK on players, so we supplement with any
+    (player_id, player_name) pairs found only in games_details.csv.
+
+    Note: the `position` column is intentionally left OUT of the upsert
+    entirely (not set to None) so re-running this backfill never clobbers
+    values already filled in by enrich_player_bio.py.
     """
     df = _read_csv("players.csv")
     df = df.rename(columns=str.lower)
@@ -99,9 +111,23 @@ def load_players(engine):
     out = pd.DataFrame({
         "player_id": df["player_id"],
         "full_name": df.get("player_name", df.get("full_name")),
-        "position": None,
         "team_id": df.get("team_id"),
     })
+
+    # supplement with player_ids that only appear in games_details.csv
+    details = _read_csv("games_details.csv")
+    details = details.rename(columns=str.lower)
+    supplemental = (
+        details[["player_id", "player_name", "team_id"]]
+        .rename(columns={"player_name": "full_name"})
+        .dropna(subset=["player_id"])
+        .drop_duplicates(subset=["player_id"])
+    )
+    missing = supplemental[~supplemental["player_id"].isin(out["player_id"])]
+    if len(missing):
+        log.info("Adding %d player_ids found in games_details.csv but missing from players.csv", len(missing))
+        out = pd.concat([out, missing], ignore_index=True)
+
     out = validate_players(out)
     _upsert(engine, out, "players", "player_id")
     log.info("Loaded %d players (position/birth_date left NULL -- run "
@@ -156,18 +182,29 @@ def load_player_game_stats(engine):
     log.info("Loaded %d player-game rows", len(out))
 
 
+_MIN_RE = re.compile(r"^(\d+(?:\.\d+)?)(?::(\d+))?$")
+
+
 def _parse_minutes(raw) -> float:
-    """Kaggle box scores often store minutes as 'MM:SS' strings."""
+    """
+    Kaggle box scores store minutes in a few inconsistent formats:
+      'MM:SS'            e.g. '18:06'
+      'MM' (plain int)   e.g. '19'
+      'MM.000000:SS'     e.g. '29.000000:24' -- a malformed variant seen in
+                          this export where a float-formatted minute got
+                          concatenated with ':SS' instead of cleanly replaced.
+    The regex pulls the leading minutes (int or float) and an optional
+    trailing seconds group, so all three shapes resolve correctly.
+    """
     if pd.isna(raw):
         return 0.0
-    s = str(raw)
-    if ":" in s:
-        m, sec = s.split(":")
-        return round(int(m) + int(sec) / 60, 2)
-    try:
-        return float(s)
-    except ValueError:
+    s = str(raw).strip()
+    match = _MIN_RE.match(s)
+    if not match:
         return 0.0
+    minutes = int(float(match.group(1)))
+    seconds = int(match.group(2)) if match.group(2) else 0
+    return round(minutes + seconds / 60, 2)
 
 
 def _upsert(engine, df: pd.DataFrame, table: str, key_cols):
