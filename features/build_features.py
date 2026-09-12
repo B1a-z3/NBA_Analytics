@@ -31,6 +31,19 @@ def _load_raw(engine):
     pgs = pd.read_sql("SELECT * FROM player_game_stats", engine)
     tracking = pd.read_sql("SELECT * FROM player_tracking_stats", engine)
     players = pd.read_sql("SELECT player_id, full_name, birth_date FROM players", engine)
+
+    # psycopg2 returns Postgres DATE columns as plain datetime.date objects,
+    # so pandas reads them back as object dtype rather than datetime64. That's
+    # normally harmless, EXCEPT groupby(...).diff() on an object-dtype date
+    # column returns an all-NaN *object*-dtype result for any single-row
+    # group (e.g. a player who appears in exactly one game -- common among
+    # rarely-used players), and `.dt.days` then fails since the dtype isn't
+    # recognized as datetime-like. Converting to real datetime64 up front
+    # makes diff() return a proper (NaT-filled) timedelta64 series instead,
+    # so `.dt.days` always works regardless of group size.
+    games["game_date"] = pd.to_datetime(games["game_date"])
+    players["birth_date"] = pd.to_datetime(players["birth_date"])
+
     return games, pgs, tracking, players
 
 
@@ -109,7 +122,7 @@ def build_player_game_features(pgs: pd.DataFrame, games: pd.DataFrame,
         df.groupby("player_id")["minutes"]
         .transform(lambda s: s.shift(1).rolling(ROLLING_WINDOW_PLAYER, min_periods=1).mean())
     )
-    df["distance_miles"] = df["distance_miles"].fillna(0)
+    df["distance_miles"] = pd.to_numeric(df["distance_miles"], errors="coerce").fillna(0)
     df["load_index"] = df["minutes"] + df["distance_miles"] * 5
     df["rolling_load_index"] = (
         df.groupby("player_id")["load_index"]

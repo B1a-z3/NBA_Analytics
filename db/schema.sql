@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE TABLE IF NOT EXISTS players (
     player_id       INTEGER PRIMARY KEY,        -- nba_api player id
     full_name       VARCHAR(100) NOT NULL,
-    position        VARCHAR(10),
+    position        VARCHAR(20),  -- nba_api returns combo values like 'Forward-Center' (14 chars)
     birth_date      DATE,
     height_inches   SMALLINT,
     weight_lbs      SMALLINT,

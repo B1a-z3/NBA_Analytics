@@ -61,17 +61,30 @@ def fetch_players_needing_enrichment(engine, limit: int | None) -> pd.DataFrame:
 
 
 def enrich(engine, players_df: pd.DataFrame):
+    """
+    Each player is fetched + written in its OWN transaction (engine.begin()
+    per row) rather than one transaction for the whole batch. Postgres
+    aborts an entire transaction on the first error and refuses every
+    subsequent statement until rollback -- with one shared transaction, a
+    single bad row (e.g. a truncation error, or a fetch that raised) used
+    to cascade into every remaining player failing with
+    InFailedSqlTransaction, silently wiping out an otherwise-successful run.
+    Per-row transactions cost a bit of throughput but make failures local.
+    """
     updated = 0
     failed = []
-    with engine.begin() as conn:
-        for _, row in players_df.iterrows():
-            player_id = row["player_id"]
-            try:
-                info = _fetch_player_info(player_id)
-                if info.empty:
-                    failed.append(player_id)
-                    continue
-                r = info.iloc[0]
+    for _, row in players_df.iterrows():
+        player_id = row["player_id"]
+        try:
+            info = _fetch_player_info(player_id)
+            if info.empty:
+                failed.append(player_id)
+                continue
+            r = info.iloc[0]
+            position = r.get("POSITION")
+            if position and len(str(position)) > 20:
+                position = str(position)[:20]
+            with engine.begin() as conn:
                 conn.execute(text("""
                     UPDATE players
                     SET position = :position,
@@ -81,15 +94,16 @@ def enrich(engine, players_df: pd.DataFrame):
                     WHERE player_id = :player_id
                 """), {
                     "player_id": int(player_id),
-                    "position": r.get("POSITION"),
+                    "position": position,
                     "birth_date": pd.to_datetime(r.get("BIRTHDATE")).date() if r.get("BIRTHDATE") else None,
                     "height_inches": _parse_height(r.get("HEIGHT")),
                     "weight_lbs": int(r["WEIGHT"]) if pd.notna(r.get("WEIGHT")) and str(r.get("WEIGHT")).isdigit() else None,
                 })
-                updated += 1
-            except Exception as exc:
-                log.warning("Failed to enrich player_id=%s: %s", player_id, exc)
-                failed.append(player_id)
+            updated += 1
+        except Exception as exc:
+            log.warning("Failed to enrich player_id=%s: %s", player_id, exc)
+            failed.append(player_id)
+        finally:
             time.sleep(REQUEST_DELAY_SECONDS)
     return updated, failed
 

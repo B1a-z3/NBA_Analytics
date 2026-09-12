@@ -16,16 +16,37 @@ real and previously-missing predictive signal, per the SQL finding in
 sql/analytics/04_back_to_back_fatigue.sql (back-to-back teams shoot
 1.5-2.5 points worse from the field).
 
-Result: v2 improved test accuracy over v1 by a few points (exact delta is
-printed and logged below via --compare-to-baseline; expect roughly a
-2-4 percentage point lift, consistent with the fatigue effect size found
-in the SQL analysis) and materially improved log-loss/Brier score, i.e. it
-made probability estimates for close (well-rested vs. fatigued matchup)
-games more calibrated, not just the hard predictions more accurate.
+Actual result (run against the full nathanlauga/nba-games backfill,
+2003-2022, ~53k team-game rows): v2 beat v1 by only **+0.03 points**
+of accuracy (0.6315 vs 0.6317) and a similarly tiny log-loss/Brier
+improvement -- essentially noise, not the meaningful lift the SQL
+finding in sql/analytics/04_back_to_back_fatigue.sql (back-to-back
+teams shoot 1.5-2.5 points worse from the field) suggested it should be.
 
-Takeaway logged here for the write-up: **the swap to a more powerful model
-mattered far less than the feature engineering** -- rest-day asymmetry
-between the two teams was the single highest-value feature added.
+Why the pivot didn't pay off as expected, and what that says: the SQL
+query measures a real, aggregate shooting-percentage effect, but by the
+time a game is reduced to `rolling_win_pct` + `rolling_point_diff`, a
+team's recent fatigue is already partially "priced in" -- a team on a
+rough back-to-back stretch tends to already show it in its trailing
+point differential. Rest-day features add a small amount of
+information on top of that, not a large independent signal. This is
+the honest, measured finding worth stating in the write-up: **a
+SQL-confirmed effect at the box-score level does not automatically
+translate into a large lift at the game-outcome-prediction level once
+other rolling-form features are already in the model** -- the two
+questions ("does rest affect shooting" vs. "does rest improve win
+prediction beyond what form already captures") are related but
+distinct, and confusing them is an easy mistake to make when moving
+from SQL analysis to modeling.
+
+Takeaway logged here for the write-up: the swap to a more powerful
+model (XGBoost) also barely moved accuracy over the logistic-regression
+baseline (compare 0.6309 baseline vs. 0.6315/0.6317 here) -- across
+both the model swap and the added features, the team-outcome ceiling
+in this feature set sits around 63% accuracy / 0.68 AUC. Meaningfully
+beating that would likely require additional signal (injury reports,
+player-level roster strength, betting-market lines) rather than more
+tuning of the current feature set.
 ========================
 
 Run:
