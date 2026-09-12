@@ -53,11 +53,23 @@ tests/                          Unit tests for validation + feature logic (no DB
    pip install -r requirements.txt
    ```
 
-3. **Backfill historical data** (download a Kaggle NBA bulk dataset — e.g. the
-   `wyattowalsh/nba-database` or `nathanlauga/nba-games` export — into
-   `data/raw/kaggle/`, then):
+3. **Backfill historical data** — download the
+   [`nathanlauga/nba-games`](https://www.kaggle.com/datasets/nathanlauga/nba-games)
+   Kaggle dataset (`games.csv`, `games_details.csv`, `players.csv`, `teams.csv`)
+   into `data/raw/kaggle/`, then:
    ```bash
    python ingestion/load_kaggle_backfill.py
+   ```
+   Note: that export's `teams.csv` has no conference/division columns (filled in
+   from the static [`ingestion/reference/team_conferences.csv`](ingestion/reference/team_conferences.csv)
+   lookup) and its `players.csv` has no bio data, so `players.position`/`birth_date`
+   land NULL from this step alone — run the enrichment step below to fill them in.
+
+3b. **Enrich player bio data** (birth_date/position/height/weight, needed for
+   the aging-curve query and the decline model's `age_years` feature):
+   ```bash
+   python ingestion/enrich_player_bio.py --limit 50   # smoke test first
+   python ingestion/enrich_player_bio.py              # full run (~0.6s/player via nba_api)
    ```
 
 4. **Pull recent/live data via nba_api:**

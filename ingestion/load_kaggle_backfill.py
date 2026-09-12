@@ -47,14 +47,35 @@ def _read_csv(name: str) -> pd.DataFrame:
 
 
 def load_teams(engine):
+    """
+    The common Kaggle bulk export (nathanlauga/nba-games teams.csv) does NOT
+    include conference/division columns -- only ABBREVIATION, NICKNAME, CITY,
+    ARENA, etc. We fill conference/division from a static reference table
+    (ingestion/reference/team_conferences.csv) keyed on abbreviation, which
+    also covers historically relocated/renamed franchises (SEA->OKC,
+    NJN->BKN, VAN->MEM, etc.) so multi-season backfills don't lose the join.
+    """
     df = _read_csv("teams.csv")
     df = df.rename(columns=str.lower)
+
+    ref_path = Path(__file__).resolve().parent / "reference" / "team_conferences.csv"
+    ref = pd.read_csv(ref_path)
+
+    merged = df.merge(ref, on="abbreviation", how="left")
+    missing = merged[merged["conference"].isna()]["abbreviation"].unique()
+    if len(missing):
+        log.warning(
+            "No conference/division mapping for abbreviations: %s -- "
+            "add them to ingestion/reference/team_conferences.csv",
+            list(missing),
+        )
+
     out = pd.DataFrame({
-        "team_id": df["team_id"],
-        "abbreviation": df["abbreviation"],
-        "name": df.get("nickname", df.get("name")),
-        "conference": df.get("conference"),
-        "division": df.get("division"),
+        "team_id": merged["team_id"],
+        "abbreviation": merged["abbreviation"],
+        "name": merged.get("nickname", merged.get("name")),
+        "conference": merged["conference"],
+        "division": merged["division"],
     })
     out = validate_teams(out)
     _upsert(engine, out, "teams", "team_id")
@@ -62,17 +83,29 @@ def load_teams(engine):
 
 
 def load_players(engine):
+    """
+    The common Kaggle bulk export's players.csv has one row per
+    (player, season) with only PLAYER_NAME / PLAYER_ID / TEAM_ID / SEASON --
+    no position, birth_date, height, or weight. We take the most recent
+    team_id per player here; birth_date/position/height/weight are left NULL
+    and filled in separately by ingestion/enrich_player_bio.py (nba_api),
+    since aging-curve analysis and the decline model's age_years feature
+    need birth_date.
+    """
     df = _read_csv("players.csv")
     df = df.rename(columns=str.lower)
+    if "season" in df.columns:
+        df = df.sort_values("season").drop_duplicates(subset=["player_id"], keep="last")
     out = pd.DataFrame({
         "player_id": df["player_id"],
         "full_name": df.get("player_name", df.get("full_name")),
-        "position": df.get("position"),
+        "position": None,
         "team_id": df.get("team_id"),
     })
     out = validate_players(out)
     _upsert(engine, out, "players", "player_id")
-    log.info("Loaded %d players", len(out))
+    log.info("Loaded %d players (position/birth_date left NULL -- run "
+              "ingestion/enrich_player_bio.py to fill them in)", len(out))
 
 
 def load_games(engine):

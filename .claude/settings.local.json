@@ -3,7 +3,11 @@
     "allow": [
       "Bash(python -m pip install --quiet pandas numpy python-dotenv sqlalchemy pytest)",
       "Bash(python -m pytest tests/ -v)",
-      "Bash(python -m pip install --quiet psycopg2-binary)"
+      "Bash(python -m pip install --quiet psycopg2-binary)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pip install --quiet tenacity)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); import ingestion.load_kaggle_backfill\")",
+      "Bash(python -m pytest tests/ -q)"
     ]
   }
 }
