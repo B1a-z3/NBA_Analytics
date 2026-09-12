@@ -27,6 +27,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from config.db import get_engine  # noqa: E402
+import ingestion.nba_api_tls_patch  # noqa: E402,F401 -- must precede nba_api.stats.endpoints imports
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("enrich_player_bio")
