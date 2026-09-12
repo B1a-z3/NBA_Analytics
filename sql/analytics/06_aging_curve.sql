@@ -1,0 +1,57 @@
+-- ============================================================================
+-- Business Question 6: What does the season-over-season aging curve look
+-- like for veteran players (efficiency/production vs. age)?
+--
+-- Why it matters: age is a slow-moving prior for the decline-risk model --
+-- a 22-year-old and a 36-year-old showing the same rolling-window dip carry
+-- very different risk, since aging curves show typical decline points.
+--
+-- Technique: derive age-at-season from birth_date, aggregate per
+-- player-season, then window functions (LAG) compare each season to the
+-- player's own prior season to compute year-over-year deltas.
+-- ============================================================================
+
+WITH player_season_stats AS (
+    SELECT
+        pgs.player_id,
+        p.full_name,
+        g.season,
+        DATE_PART('year', AGE(
+            MAKE_DATE(SPLIT_PART(g.season, '-', 1)::int, 10, 1),  -- approx season start (Oct 1)
+            p.birth_date
+        ))::int AS age_at_season_start,
+        AVG(pgs.points) AS avg_pts,
+        AVG(pgs.minutes) AS avg_min,
+        AVG(CASE WHEN (pgs.fga + 0.44 * pgs.fta) = 0 THEN NULL
+                 ELSE pgs.points::numeric / (2 * (pgs.fga + 0.44 * pgs.fta)) END) AS avg_ts_pct
+    FROM player_game_stats pgs
+    JOIN games g ON g.game_id = pgs.game_id
+    JOIN players p ON p.player_id = pgs.player_id
+    WHERE p.birth_date IS NOT NULL
+    GROUP BY pgs.player_id, p.full_name, g.season, p.birth_date
+),
+with_prior_season AS (
+    SELECT
+        *,
+        LAG(avg_pts) OVER (PARTITION BY player_id ORDER BY season) AS prior_season_pts,
+        LAG(avg_ts_pct) OVER (PARTITION BY player_id ORDER BY season) AS prior_season_ts_pct
+    FROM player_season_stats
+)
+SELECT
+    age_at_season_start,
+    COUNT(DISTINCT player_id) AS n_players,
+    ROUND(AVG(avg_pts), 2) AS league_avg_pts_at_age,
+    ROUND(AVG(avg_ts_pct), 3) AS league_avg_ts_pct_at_age,
+    ROUND(AVG(avg_pts - prior_season_pts), 2) AS avg_yoy_pts_change,
+    ROUND(AVG(avg_ts_pct - prior_season_ts_pct), 3) AS avg_yoy_ts_pct_change
+FROM with_prior_season
+WHERE age_at_season_start BETWEEN 20 AND 40
+GROUP BY age_at_season_start
+ORDER BY age_at_season_start;
+
+-- Finding (example): production (PPG) and efficiency (TS%) both tend to
+-- peak in the age-27-to-29 band and show a visible, accelerating
+-- year-over-year decline starting around age 33-34.
+-- Insight: age band (e.g. <27 / 27-32 / 33+) is a useful categorical prior
+-- feature for the decline-risk model, on top of the current-season rolling
+-- signals.

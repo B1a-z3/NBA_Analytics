@@ -1,0 +1,170 @@
+"""
+Backfill loader: reads a Kaggle bulk NBA dataset (e.g. "nba-games" /
+"nba-players-stats" style CSV exports covering 5-10 seasons of box scores)
+from data/raw/kaggle/, validates it, and upserts into Postgres.
+
+Expected input files (adjust KAGGLE_FILES if your Kaggle export uses
+different names — this targets the common wyattowalsh/nba-database or
+nathanlauga/nba-games Kaggle layout):
+    games.csv               -> games table
+    teams.csv                -> teams table
+    players.csv               -> players table
+    games_details.csv (or player_box_scores.csv) -> player_game_stats table
+
+Run:
+    python ingestion/load_kaggle_backfill.py
+"""
+import logging
+import sys
+from pathlib import Path
+
+import pandas as pd
+from sqlalchemy import text
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from config.db import get_engine  # noqa: E402
+from ingestion.validation import (  # noqa: E402
+    validate_games,
+    validate_player_game_stats,
+    validate_players,
+    validate_teams,
+)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("kaggle_backfill")
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "raw" / "kaggle"
+
+
+def _read_csv(name: str) -> pd.DataFrame:
+    path = DATA_DIR / name
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Expected Kaggle export at {path}. Download the bulk dataset "
+            f"from Kaggle and place its CSVs in {DATA_DIR}."
+        )
+    return pd.read_csv(path)
+
+
+def load_teams(engine):
+    df = _read_csv("teams.csv")
+    df = df.rename(columns=str.lower)
+    out = pd.DataFrame({
+        "team_id": df["team_id"],
+        "abbreviation": df["abbreviation"],
+        "name": df.get("nickname", df.get("name")),
+        "conference": df.get("conference"),
+        "division": df.get("division"),
+    })
+    out = validate_teams(out)
+    _upsert(engine, out, "teams", "team_id")
+    log.info("Loaded %d teams", len(out))
+
+
+def load_players(engine):
+    df = _read_csv("players.csv")
+    df = df.rename(columns=str.lower)
+    out = pd.DataFrame({
+        "player_id": df["player_id"],
+        "full_name": df.get("player_name", df.get("full_name")),
+        "position": df.get("position"),
+        "team_id": df.get("team_id"),
+    })
+    out = validate_players(out)
+    _upsert(engine, out, "players", "player_id")
+    log.info("Loaded %d players", len(out))
+
+
+def load_games(engine):
+    df = _read_csv("games.csv")
+    df = df.rename(columns=str.lower)
+    out = pd.DataFrame({
+        "game_id": df["game_id"].astype(str).str.zfill(10),
+        "game_date": pd.to_datetime(df["game_date_est"]).dt.date,
+        "season": df["season"].apply(lambda s: f"{s}-{str(int(s) + 1)[-2:]}"),
+        "home_team_id": df["home_team_id"],
+        "away_team_id": df["visitor_team_id"],
+        "home_score": df["pts_home"],
+        "away_score": df["pts_away"],
+    })
+    out = validate_games(out)
+    _upsert(engine, out, "games", "game_id")
+    log.info("Loaded %d games", len(out))
+
+
+def load_player_game_stats(engine):
+    df = _read_csv("games_details.csv")
+    df = df.rename(columns=str.lower)
+    out = pd.DataFrame({
+        "player_id": df["player_id"],
+        "game_id": df["game_id"].astype(str).str.zfill(10),
+        "team_id": df["team_id"],
+        "minutes": df["min"].apply(_parse_minutes),
+        "points": df["pts"],
+        "rebounds": df["reb"],
+        "offensive_reb": df.get("oreb"),
+        "defensive_reb": df.get("dreb"),
+        "assists": df["ast"],
+        "steals": df.get("stl"),
+        "blocks": df.get("blk"),
+        "turnovers": df.get("to"),
+        "fouls": df.get("pf"),
+        "fgm": df.get("fgm"),
+        "fga": df.get("fga"),
+        "fg3m": df.get("fg3m"),
+        "fg3a": df.get("fg3a"),
+        "ftm": df.get("ftm"),
+        "fta": df.get("fta"),
+        "plus_minus": df.get("plus_minus"),
+        "started": df.get("start_position").notna() if "start_position" in df else False,
+    })
+    out = validate_player_game_stats(out)
+    _upsert(engine, out, "player_game_stats", ["player_id", "game_id"])
+    log.info("Loaded %d player-game rows", len(out))
+
+
+def _parse_minutes(raw) -> float:
+    """Kaggle box scores often store minutes as 'MM:SS' strings."""
+    if pd.isna(raw):
+        return 0.0
+    s = str(raw)
+    if ":" in s:
+        m, sec = s.split(":")
+        return round(int(m) + int(sec) / 60, 2)
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _upsert(engine, df: pd.DataFrame, table: str, key_cols):
+    """Simple upsert via a temp staging table + ON CONFLICT DO UPDATE.
+    Fine at Kaggle-backfill volumes (millions of rows is still seconds-to-minutes)."""
+    if df.empty:
+        return
+    key_cols = [key_cols] if isinstance(key_cols, str) else key_cols
+    staging = f"staging_{table}"
+    with engine.begin() as conn:
+        df.to_sql(staging, conn, if_exists="replace", index=False)
+        cols = list(df.columns)
+        update_cols = [c for c in cols if c not in key_cols]
+        set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols) or "created_at = now()"
+        conn.execute(text(f"""
+            INSERT INTO {table} ({', '.join(cols)})
+            SELECT {', '.join(cols)} FROM {staging}
+            ON CONFLICT ({', '.join(key_cols)}) DO UPDATE SET {set_clause}
+        """))
+        conn.execute(text(f"DROP TABLE {staging}"))
+
+
+def main():
+    engine = get_engine()
+    load_teams(engine)
+    load_players(engine)
+    load_games(engine)
+    load_player_game_stats(engine)
+    log.info("Kaggle backfill complete.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+venv/
+.env
+data/raw/
+data/landing/
+data/validated/
+models/artifacts/
+*.joblib
+.pytest_cache/
+.ipynb_checkpoints/
+logs/
+*.log
