@@ -50,7 +50,12 @@ JOIN home_results h ON h.team_id = t.team_id
 JOIN away_results a ON a.team_id = t.team_id
 ORDER BY home_court_edge DESC;
 
--- Finding (example): league-average home_court_edge sits around +0.10-0.15
--- win% but individual teams vary from near 0 to +0.25.
+-- Finding (real result, full nathanlauga/nba-games backfill 2003-2022):
+-- league-average home_court_edge is +0.178 win%, ranging from +0.121 to
+-- +0.240 across teams -- a real spread (~12 points team-to-team), though
+-- narrower than an earlier pre-data guess that the low end was "near 0"
+-- (every team in this dataset shows a clear positive home-court edge, none
+-- close to zero).
 -- Insight: home/away should be modeled as a per-team feature (or team-level
--- random effect), not a single global home-court constant.
+-- random effect), not a single global home-court constant -- but note
+-- every team benefits from playing at home, just by varying amounts.

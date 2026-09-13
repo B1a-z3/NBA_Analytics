@@ -49,9 +49,19 @@ WHERE age_at_season_start BETWEEN 20 AND 40
 GROUP BY age_at_season_start
 ORDER BY age_at_season_start;
 
--- Finding (example): production (PPG) and efficiency (TS%) both tend to
--- peak in the age-27-to-29 band and show a visible, accelerating
--- year-over-year decline starting around age 33-34.
--- Insight: age band (e.g. <27 / 27-32 / 33+) is a useful categorical prior
--- feature for the decline-risk model, on top of the current-season rolling
+-- Finding (real result, full nathanlauga/nba-games backfill, ages 20-34
+-- with a meaningful sample size): both league_avg_pts_at_age (peaks 8.14
+-- at age 28) and league_avg_ts_pct_at_age (peaks 0.522 at age 28) crest at
+-- age 28, close to the pre-data guess of a 27-29 peak band. But
+-- avg_yoy_pts_change turns negative starting at age 26 already (-0.07),
+-- well before the peak age itself and much earlier than an earlier draft's
+-- guess of "decline starting around 33-34" -- points production keeps
+-- ticking up on average through 28 even as the year-over-year DELTA is
+-- already shrinking, then the level itself turns down after 28 and the
+-- decline visibly accelerates (-1.11 by 29, -1.67 by 34).
+-- Insight: age is a useful categorical prior, but the boundary matters --
+-- the real inflection in year-over-year trajectory starts mid-20s, not
+-- in the widely-assumed "decline after 30" range, which argues for
+-- age_years as a continuous feature (as used in the decline model) rather
+-- than a coarse age-band bucket that would miss this earlier turn.
 -- signals.

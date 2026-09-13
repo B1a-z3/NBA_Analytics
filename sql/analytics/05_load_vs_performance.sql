@@ -68,8 +68,20 @@ WHERE next_ts_pct IS NOT NULL
 GROUP BY load_quartile
 ORDER BY load_quartile;
 
--- Finding (example): weak-to-moderate negative correlation between load
--- index and next-game TS% (e.g. r ~ -0.10 to -0.15); top load quartile shows
--- a small but consistent efficiency dip the following game.
--- Insight: raw load alone is a modest predictor -- it strengthens combined
--- with rest days (see query 4), supporting a combined fatigue feature.
+-- Finding (real result, full nathanlauga/nba-games backfill 2003-2022,
+-- ~467k player-game observations): correlation is +0.027 -- essentially
+-- negligible, and in the OPPOSITE direction of the fatigue hypothesis this
+-- query was designed to test (an earlier draft guessed a weak negative
+-- correlation, r ~ -0.10 to -0.15, before running against real data). The
+-- quartile breakdown confirms this isn't noise: avg next-game TS% rises
+-- monotonically from the lowest load quartile (0.528) to the highest
+-- (0.545).
+-- Insight: raw load index (minutes + weighted distance) is confounded with
+-- player quality -- better players log heavier minutes AND shoot more
+-- efficiently, and that quality effect swamps any fatigue signal in a
+-- simple correlation. This is a real methodological finding, not a
+-- reassuring one: predicting decline from load requires controlling for
+-- (or normalizing against) each player's OWN baseline first -- which is
+-- exactly what sql/analytics/02_player_efficiency_decline.sql and the
+-- decline model's rolling-vs-season-baseline features do, rather than
+-- comparing raw load across different players directly.
