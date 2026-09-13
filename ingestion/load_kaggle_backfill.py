@@ -36,6 +36,27 @@ log = logging.getLogger("kaggle_backfill")
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "raw" / "kaggle"
 
+# Real nba.com person_ids top out around 1.6-1.7 million as of the mid-2020s
+# (they're assigned sequentially and roughly track draft/debut order). This
+# export's games_details.csv contains a handful of corrupted rows with
+# 9-10 digit player_ids (e.g. 1962936250) paired with garbage/mismatched
+# names (one literal row was named "Matt Matt") -- clearly not real nba.com
+# IDs. Filtering them out here keeps both load_players' supplemental-player
+# logic and load_player_game_stats' box-score rows from ever re-ingesting
+# this junk on a future backfill re-run.
+MAX_PLAUSIBLE_PLAYER_ID = 9_999_999
+
+
+def _filter_implausible_player_ids(df: pd.DataFrame, id_col: str = "player_id") -> pd.DataFrame:
+    bad = df[df[id_col] > MAX_PLAUSIBLE_PLAYER_ID]
+    if len(bad):
+        log.warning(
+            "Dropping %d games_details.csv row(s) with implausible player_id "
+            "(> %d, not a real nba.com id): %s",
+            len(bad), MAX_PLAUSIBLE_PLAYER_ID, bad[id_col].unique().tolist(),
+        )
+    return df[df[id_col] <= MAX_PLAUSIBLE_PLAYER_ID].copy()
+
 
 def _read_csv(name: str) -> pd.DataFrame:
     path = DATA_DIR / name
@@ -117,6 +138,7 @@ def load_players(engine):
     # supplement with player_ids that only appear in games_details.csv
     details = _read_csv("games_details.csv")
     details = details.rename(columns=str.lower)
+    details = _filter_implausible_player_ids(details)
     supplemental = (
         details[["player_id", "player_name", "team_id"]]
         .rename(columns={"player_name": "full_name"})
@@ -154,6 +176,7 @@ def load_games(engine):
 def load_player_game_stats(engine):
     df = _read_csv("games_details.csv")
     df = df.rename(columns=str.lower)
+    df = _filter_implausible_player_ids(df)
     out = pd.DataFrame({
         "player_id": df["player_id"],
         "game_id": df["game_id"].astype(str).str.zfill(10),
