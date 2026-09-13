@@ -53,6 +53,10 @@ class GameOutcomeRequest(BaseModel):
 
 
 class GameOutcomeResponse(BaseModel):
+    # protected_namespaces=() needed because `model_used` starts with the
+    # "model_" prefix Pydantic v2 reserves by default for its own internals
+    model_config = {"protected_namespaces": ()}
+
     home_win_probability: float
     predicted_home_win: bool
     model_used: str
