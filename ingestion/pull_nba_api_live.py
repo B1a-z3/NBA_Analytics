@@ -1,11 +1,17 @@
 """
-Live/current-season puller using nba_api. Pulls games from the last N days
-(simulating a nightly cron during the season), plus per-player box scores
-and tracking stats for those games, and upserts into Postgres.
+Live/current-season puller using nba_api. By default pulls games from the
+last N days (simulating a nightly cron during the season), plus per-player
+box scores and tracking stats for those games, and upserts into Postgres.
+An explicit --start-date/--end-date range can be given instead, to backfill
+any past date range (e.g. June of a prior season) through this same path --
+useful because player_tracking_stats (distance run, speed, touches, drives)
+is ONLY available via nba_api, not in the Kaggle bulk CSVs, so this is how
+you'd fill in tracking data for historical games already loaded by
+load_kaggle_backfill.py.
 
 Run:
     python ingestion/pull_nba_api_live.py --days 3
-    python ingestion/pull_nba_api_live.py --season 2023-24   # full season pull
+    python ingestion/pull_nba_api_live.py --start-date 2024-06-01 --end-date 2024-06-30
 
 This mirrors the schema/validation used in load_kaggle_backfill.py so both
 sources land in the same tables.
@@ -186,12 +192,30 @@ def _upsert(engine, df: pd.DataFrame, table: str, key_cols):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pull recent NBA data via nba_api")
-    parser.add_argument("--days", type=int, default=3, help="Pull last N days of games")
+    parser = argparse.ArgumentParser(description="Pull recent (or historical) NBA data via nba_api")
+    parser.add_argument("--days", type=int, default=3,
+                         help="Pull the last N days of games, ending today (default: 3). "
+                              "Ignored if --start-date/--end-date are given.")
+    parser.add_argument("--start-date", type=str, default=None,
+                         help="Explicit range start, YYYY-MM-DD (e.g. 2024-06-01). "
+                              "Requires --end-date.")
+    parser.add_argument("--end-date", type=str, default=None,
+                         help="Explicit range end, YYYY-MM-DD (e.g. 2024-06-30). "
+                              "Requires --start-date.")
     args = parser.parse_args()
 
-    end_date = date.today()
-    start_date = end_date - timedelta(days=args.days)
+    if bool(args.start_date) != bool(args.end_date):
+        parser.error("--start-date and --end-date must be given together")
+
+    if args.start_date:
+        start_date = date.fromisoformat(args.start_date)
+        end_date = date.fromisoformat(args.end_date)
+        if start_date > end_date:
+            parser.error("--start-date must be on or before --end-date")
+    else:
+        end_date = date.today()
+        start_date = end_date - timedelta(days=args.days)
+
     log.info("Pulling games from %s to %s", start_date, end_date)
 
     engine = get_engine()
