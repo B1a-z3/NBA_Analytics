@@ -5,6 +5,7 @@ and league-wide analytics (visualizing the sql/analytics/ business questions).
 Run:
     streamlit run dashboard/app.py
 """
+import os
 import sys
 from pathlib import Path
 
@@ -12,6 +13,19 @@ import joblib
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+# Streamlit Community Cloud's secrets manager (Settings -> Secrets, TOML
+# format) does NOT automatically become an OS environment variable -- it's
+# only exposed via st.secrets. config/db.py reads DATABASE_URL via
+# os.getenv() at import time, so bridge it here BEFORE that import runs.
+# Locally this is a no-op: st.secrets raises/returns empty when no
+# secrets.toml exists, and .env (via python-dotenv in config/db.py) covers
+# local development instead.
+try:
+    if "DATABASE_URL" in st.secrets:
+        os.environ["DATABASE_URL"] = st.secrets["DATABASE_URL"]
+except FileNotFoundError:
+    pass  # no secrets.toml -- local dev, config/db.py falls back to .env
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from config.db import get_engine  # noqa: E402
