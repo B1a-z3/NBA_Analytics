@@ -1,4 +1,11 @@
-nba_api==1.4.1
+nba_api==1.11.4  # bumped from 1.4.1: that version pins certifi<2024.0.0, which
+                 # directly conflicts with curl_cffi's certifi>=2024.2.2 requirement
+                 # (uv's resolver refuses to install the combination; pip's older
+                 # resolver just warns and lets it through, which is how this went
+                 # unnoticed locally). 1.11.4 dropped the certifi pin entirely.
+                 # Note: this version also changed nba_api's internal HTTP mechanism
+                 # (Session-based instead of a module-level requests.get call) --
+                 # ingestion/nba_api_tls_patch.py covers both.
 curl_cffi==0.16.3  # stats.nba.com fingerprints the TLS handshake (Akamai); plain
                   # requests/urllib3 gets silently stalled, so nba_api's HTTP layer
                   # is monkeypatched (ingestion/nba_api_tls_patch.py) to route through
