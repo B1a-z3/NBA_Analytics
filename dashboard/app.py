@@ -83,31 +83,12 @@ def load_home_away_edge():
 @st.cache_data(ttl=600)
 def load_back_to_back_fatigue():
     """Team shooting % by rest bucket -- the chart version of
-    sql/analytics/04_back_to_back_fatigue.sql, reusing the already-
-    materialized team_game_features.days_rest instead of recomputing the
-    schedule self-join (fast: a single pass over pre-built feature rows)."""
-    return pd.read_sql("""
-        WITH team_shooting AS (
-            SELECT game_id, team_id,
-                   SUM(fgm)::numeric / NULLIF(SUM(fga), 0) AS team_fg_pct
-            FROM player_game_stats
-            GROUP BY game_id, team_id
-        )
-        SELECT
-            CASE
-                WHEN tgf.days_rest = 1 THEN 'Back-to-back (1 day rest)'
-                WHEN tgf.days_rest = 2 THEN '2 days rest'
-                ELSE '3+ days rest'
-            END AS rest_bucket,
-            MIN(tgf.days_rest) AS sort_key,
-            COUNT(*) AS n_games,
-            ROUND(AVG(ts.team_fg_pct)::numeric, 4) AS avg_team_fg_pct
-        FROM team_game_features tgf
-        JOIN team_shooting ts ON ts.game_id = tgf.game_id AND ts.team_id = tgf.team_id
-        WHERE tgf.days_rest IS NOT NULL
-        GROUP BY rest_bucket
-        ORDER BY sort_key
-    """, engine)
+    sql/analytics/04_back_to_back_fatigue.sql. Reads a precomputed summary
+    table (features/build_dashboard_summaries.py) rather than joining the
+    324MB+ raw player_game_stats table live: keeps the dashboard fast and
+    keeps that huge table out of any cloud-hosted copy of the database
+    entirely (a free-tier Postgres host typically caps around 500MB)."""
+    return pd.read_sql("SELECT * FROM dashboard_back_to_back_fatigue ORDER BY sort_key", engine)
 
 
 @st.cache_data(ttl=600)
@@ -135,31 +116,10 @@ def load_load_vs_performance():
 
 @st.cache_data(ttl=600)
 def load_aging_curve():
-    """Chart version of sql/analytics/06_aging_curve.sql."""
-    return pd.read_sql("""
-        WITH player_season_stats AS (
-            SELECT pgs.player_id, g.season,
-                   DATE_PART('year', AGE(
-                       MAKE_DATE(SPLIT_PART(g.season, '-', 1)::int, 10, 1), p.birth_date
-                   ))::int AS age_at_season_start,
-                   AVG(pgs.points) AS avg_pts,
-                   AVG(CASE WHEN (pgs.fga + 0.44 * pgs.fta) = 0 THEN NULL
-                            ELSE pgs.points::numeric / (2 * (pgs.fga + 0.44 * pgs.fta)) END) AS avg_ts_pct
-            FROM player_game_stats pgs
-            JOIN games g ON g.game_id = pgs.game_id
-            JOIN players p ON p.player_id = pgs.player_id
-            WHERE p.birth_date IS NOT NULL
-            GROUP BY pgs.player_id, g.season, p.birth_date
-        )
-        SELECT age_at_season_start,
-               COUNT(DISTINCT player_id) AS n_players,
-               ROUND(AVG(avg_pts)::numeric, 2) AS league_avg_pts_at_age,
-               ROUND(AVG(avg_ts_pct)::numeric, 3) AS league_avg_ts_pct_at_age
-        FROM player_season_stats
-        WHERE age_at_season_start BETWEEN 20 AND 40
-        GROUP BY age_at_season_start
-        ORDER BY age_at_season_start
-    """, engine)
+    """Chart version of sql/analytics/06_aging_curve.sql. Reads a
+    precomputed summary table (see load_back_to_back_fatigue's docstring
+    for why) instead of joining player_game_stats + games + players live."""
+    return pd.read_sql("SELECT * FROM dashboard_aging_curve ORDER BY age_at_season_start", engine)
 
 
 @st.cache_data(ttl=600)
