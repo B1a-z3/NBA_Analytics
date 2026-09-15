@@ -346,9 +346,9 @@ with tab_monitoring:
 # ---------------------------------------------------------------------------
 with tab_league:
     st.subheader("League-Wide Analytics")
-    st.caption("Interactive versions of the six documented business questions "
-               "in sql/analytics/ — see that folder for the full write-up of "
-               "each finding.")
+    #st.caption("Interactive versions of the six documented business questions "
+      #         "in sql/analytics/ — see that folder for the full write-up of "
+      #         "each finding.")
 
     metric_choice = st.radio("Aging curve metric", ["Points per game", "True Shooting %"], horizontal=True)
     aging_df = load_aging_curve()
