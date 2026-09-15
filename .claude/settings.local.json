@@ -7,7 +7,17 @@
       "Bash(python -c ' *)",
       "Bash(python -m pip install --quiet tenacity)",
       "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); import ingestion.load_kaggle_backfill\")",
-      "Bash(python -m pytest tests/ -q)"
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(where psql *)",
+      "Bash(where pg_ctl)",
+      "Bash(winget --version)",
+      "Bash(choco -v)",
+      "Bash(where docker *)",
+      "Bash(winget install *)",
+      "Bash(where docker.exe)",
+      "Read(//c/Program Files/**)",
+      "Bash(ls \"/c/Program Files/Docker/Docker\" 2>&1 | head -20)",
+      "Read(//c/Program Files/Docker/Docker/**)"
     ]
   }
 }
