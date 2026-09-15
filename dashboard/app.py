@@ -14,6 +14,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+# set_page_config() MUST be the first Streamlit command the script runs, in
+# any code path -- even touching st.secrets before this (to check whether a
+# secrets.toml exists) makes Streamlit render an internal notice first,
+# which trips the "must be first" check just as visibly as an explicit
+# st.* call would. So this goes before anything else.
+st.set_page_config(page_title="NBA Analytics", layout="wide")
+
 # Streamlit Community Cloud's secrets manager (Settings -> Secrets, TOML
 # format) does NOT automatically become an OS environment variable -- it's
 # only exposed via st.secrets. config/db.py reads DATABASE_URL via
@@ -30,7 +37,6 @@ except FileNotFoundError:
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from config.db import get_engine  # noqa: E402
 
-st.set_page_config(page_title="NBA Analytics", layout="wide")
 engine = get_engine()
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models" / "artifacts"
 
