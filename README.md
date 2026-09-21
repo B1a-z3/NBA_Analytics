@@ -9,9 +9,9 @@ player-level decline/fatigue monitoring — sharing one data pipeline.
 ## Architecture
 
 ```
-[Kaggle bulk] -> [Raw storage] -> [Validation/cleaning] -> [Postgres warehouse]
+[nba_api + Kaggle bulk] -> [Raw storage] -> [Validation/cleaning] -> [Postgres warehouse]
         -> [SQL analytics layer] -> [Feature engineering] -> [Model training]
-        -> [Static parquet snapshot] -> [Streamlit dashboard]
+        -> [FastAPI serving] -> [Streamlit dashboard] -> [Monitoring/drift logging]
 ```
 
 ## Project layout
@@ -20,55 +20,112 @@ player-level decline/fatigue monitoring — sharing one data pipeline.
 db/schema.sql                  Postgres DDL (5 core tables + supporting tables, FKs, constraints)
 ingestion/
   load_kaggle_backfill.py      Backfill: 5-10 seasons of box scores from Kaggle CSV export
-  validation.py                Validation/cleaning layer for ingestion
+  pull_nba_api_live.py         Live/current season pull via nba_api (games, box scores, tracking)
+  validation.py                Validation/cleaning layer shared by both ingestion sources
 sql/analytics/                 6 documented business-question SQL queries (see sql/analytics/README.md)
 features/build_features.py     Feature engineering -> team_game_features, player_game_features
 models/
   train_game_outcome_baseline.py   Logistic regression baseline
   train_game_outcome_xgb.py        XGBoost iteration + documented pivot (rest-day features)
   train_player_decline.py          Player decline-risk classifier
+api/main.py                    FastAPI: /predict/game-outcome, /predict/player-decline-risk
 dashboard/app.py                Streamlit: team trends, player risk flags, model accuracy
-dashboard/data/                Parquet snapshots the deployed dashboard reads (no database)
 monitoring/
   log_predictions.py            Logs predictions for later scoring
   update_drift_log.py           Weekly accuracy/log-loss/Brier scoring + drift alerting
 scripts/
-  export_dashboard_data.py      Exports the dashboard's parquet snapshots from a local Postgres
+  nightly_refresh.sh            Simulated nightly cron (live pull -> features -> drift log)
   run_analytics.py               Runs all 6 SQL analytics files against the warehouse
 tests/                          Unit tests for validation + feature logic (no DB required)
 ```
 
-## Deploy (GitHub + Streamlit Community Cloud)
+## Setup
 
-The dashboard needs no database: it reads the committed parquet snapshots in
-`dashboard/data/`. Push the repo to GitHub, then on
-[share.streamlit.io](https://share.streamlit.io) create an app with main file
-`dashboard/app.py`. No secrets are required.
+1. **Start Postgres** (schema auto-applies via `db/schema.sql` on first boot):
+   ```powershell
+   # PowerShell (Windows)
+   Copy-Item .env.example .env
+   docker compose up -d postgres
+   ```
+   ```bash
+   # macOS/Linux
+   cp .env.example .env
+   docker compose up -d postgres
+   ```
 
-Run locally:
-```bash
-pip install -r dashboard/requirements.txt
-streamlit run dashboard/app.py
-```
+2. **Install Python deps:**
+   ```powershell
+   # PowerShell (Windows)
+   python -m venv venv
+   venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
+   ```bash
+   # macOS/Linux
+   python -m venv venv && source venv/bin/activate
+   pip install -r requirements.txt
+   ```
 
-## Rebuilding the data (optional, local only)
+3. **Backfill historical data** — download the
+   [`nathanlauga/nba-games`](https://www.kaggle.com/datasets/nathanlauga/nba-games)
+   Kaggle dataset (`games.csv`, `games_details.csv`, `players.csv`, `teams.csv`)
+   into `data/raw/kaggle/`, then:
+   ```bash
+   python ingestion/load_kaggle_backfill.py
+   ```
+   Note: that export's `teams.csv` has no conference/division columns (filled in
+   from the static [`ingestion/reference/team_conferences.csv`](ingestion/reference/team_conferences.csv)
+   lookup) and its `players.csv` has no bio data, so `players.position`/`birth_date`
+   land NULL from this step alone — run the enrichment step below to fill them in.
 
-The rest of the pipeline (backfill, features, models, monitoring, SQL
-analytics) runs against a *local* Postgres in Docker and is only needed to
-regenerate the snapshot. There is no live data ingestion.
+3b. **Enrich player bio data** (birth_date/position/height/weight, needed for
+   the aging-curve query and the decline model's `age_years` feature):
+   ```bash
+   python ingestion/enrich_player_bio.py --limit 50   # smoke test first
+   python ingestion/enrich_player_bio.py              # full run (~0.6s/player via nba_api)
+   ```
 
-1. `cp .env.example .env && docker compose up -d postgres`, then
-   `pip install -r requirements.txt`
-2. Put the [`nathanlauga/nba-games`](https://www.kaggle.com/datasets/nathanlauga/nba-games)
-   CSVs in `data/raw/kaggle/` and run `python ingestion/load_kaggle_backfill.py`
-   (team conferences come from `ingestion/reference/team_conferences.csv`;
-   player bio fields such as birth date are not filled by this step)
-3. `python scripts/run_analytics.py`
-4. `python features/build_features.py`
-5. `python models/train_game_outcome_baseline.py`, `train_game_outcome_xgb.py`, `train_player_decline.py`
-6. `python monitoring/log_predictions.py --model game_outcome_xgb --version v1`, then `python monitoring/update_drift_log.py`
-7. `python features/build_dashboard_summaries.py`
-8. `python scripts/export_dashboard_data.py`, then commit the updated `dashboard/data/`
+4. **Pull recent/live data via nba_api:**
+   ```bash
+   python ingestion/pull_nba_api_live.py --days 3
+   ```
+
+5. **Run the SQL analytics layer** (sanity-check the warehouse + generate real findings):
+   ```bash
+   python scripts/run_analytics.py
+   ```
+
+6. **Build features:**
+   ```bash
+   python features/build_features.py
+   ```
+
+7. **Train models:**
+   ```bash
+   python models/train_game_outcome_baseline.py
+   python models/train_game_outcome_xgb.py
+   python models/train_player_decline.py
+   ```
+
+8. **Log predictions + monitoring** (simulates ongoing weekly tracking):
+   ```bash
+   python monitoring/log_predictions.py --model game_outcome_xgb --version v1
+   python monitoring/update_drift_log.py
+   ```
+
+9. **Serve the API:**
+   ```bash
+   uvicorn api.main:app --reload --port 8000
+   ```
+
+10. **Run the dashboard:**
+    ```bash
+    streamlit run dashboard/app.py
+    ```
+
+Or run everything containerized: `docker compose up --build` (after backfill +
+training have been run at least once locally, since model artifacts and the
+Kaggle bulk data aren't baked into the images).
 
 ## Tests
 
@@ -101,5 +158,6 @@ detection) without requiring a live database.
 `monitoring/update_drift_log.py` backfills actual outcomes onto logged
 predictions once games complete, computes weekly accuracy/log-loss/Brier
 score per model version, and flags drift when the latest week's accuracy
-drops more than 5 points below the trailing 4-week average. The Streamlit dashboard's "Model
-Accuracy Over Time" tab shows this log.
+drops more than 5 points below the trailing 4-week average. Both the
+`/monitoring/accuracy` API endpoint and the Streamlit dashboard's "Model
+Accuracy Over Time" tab read from this log.

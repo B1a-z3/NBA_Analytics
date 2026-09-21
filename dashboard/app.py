@@ -2,13 +2,14 @@
 Streamlit dashboard: team trends, player risk flags, model accuracy over time,
 and league-wide analytics (visualizing the sql/analytics/ business questions).
 
-Reads static snapshots from dashboard/data/ (see scripts/export_dashboard_data.py).
-
 Run:
     streamlit run dashboard/app.py
 """
+import os
+import sys
 from pathlib import Path
 
+import joblib
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -20,7 +21,24 @@ import streamlit as st
 # st.* call would. So this goes before anything else.
 st.set_page_config(page_title="NBA Analytics", layout="wide")
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+# Streamlit Community Cloud's secrets manager (Settings -> Secrets, TOML
+# format) does NOT automatically become an OS environment variable -- it's
+# only exposed via st.secrets. config/db.py reads DATABASE_URL via
+# os.getenv() at import time, so bridge it here BEFORE that import runs.
+# Locally this is a no-op: st.secrets raises/returns empty when no
+# secrets.toml exists, and .env (via python-dotenv in config/db.py) covers
+# local development instead.
+try:
+    if "DATABASE_URL" in st.secrets:
+        os.environ["DATABASE_URL"] = st.secrets["DATABASE_URL"]
+except FileNotFoundError:
+    pass  # no secrets.toml -- local dev, config/db.py falls back to .env
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from config.db import get_engine  # noqa: E402
+
+engine = get_engine()
+MODEL_DIR = Path(__file__).resolve().parents[1] / "models" / "artifacts"
 
 # Fixed-order categorical palette (colorblind-validated -- see the dataviz
 # skill's references/palette.md). Assigned by identity (team, model name),
@@ -31,59 +49,110 @@ CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
 SEQUENTIAL_BLUE = ["#cde2fb", "#9ec5f4", "#5598e7", "#2a78d6", "#184f95", "#0d366b"]
 
 
-def _read(name: str) -> pd.DataFrame:
-    return pd.read_parquet(DATA_DIR / f"{name}.parquet")
-
-
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_team_features():
-    return _read("team_features")
+    return pd.read_sql("SELECT * FROM team_game_features", engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_player_features():
-    return _read("player_features")
+    return pd.read_sql("SELECT * FROM player_game_features", engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_monitoring_log():
-    return _read("monitoring_log")
+    return pd.read_sql("""
+        SELECT mv.model_name, mv.version_tag, mml.week_start, mml.n_predictions,
+               mml.accuracy, mml.log_loss, mml.brier_score
+        FROM model_monitoring_log mml
+        JOIN model_versions mv ON mv.model_version_id = mml.model_version_id
+        ORDER BY mml.week_start
+    """, engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_teams():
-    return _read("teams")
+    return pd.read_sql("SELECT team_id, abbreviation, name FROM teams", engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_home_away_edge():
-    """Per-team home-court edge (home win% minus away win%)."""
-    return _read("home_away_edge")
+    """Per-team home-court edge (home win% minus away win%) -- the chart
+    version of sql/analytics/03_home_away_splits.sql."""
+    return pd.read_sql("""
+        WITH home_results AS (
+            SELECT home_team_id AS team_id, COUNT(*) home_games,
+                   COUNT(*) FILTER (WHERE home_score > away_score) home_wins
+            FROM games WHERE home_score IS NOT NULL GROUP BY home_team_id
+        ),
+        away_results AS (
+            SELECT away_team_id AS team_id, COUNT(*) away_games,
+                   COUNT(*) FILTER (WHERE away_score > home_score) away_wins
+            FROM games WHERE home_score IS NOT NULL GROUP BY away_team_id
+        )
+        SELECT t.abbreviation,
+               ROUND((h.home_wins::numeric / h.home_games
+                      - a.away_wins::numeric / a.away_games), 3) AS home_court_edge
+        FROM teams t
+        JOIN home_results h ON h.team_id = t.team_id
+        JOIN away_results a ON a.team_id = t.team_id
+        ORDER BY home_court_edge DESC
+    """, engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_back_to_back_fatigue():
-    """Team shooting % by rest bucket."""
-    return _read("back_to_back_fatigue")
+    """Team shooting % by rest bucket -- the chart version of
+    sql/analytics/04_back_to_back_fatigue.sql. Reads a precomputed summary
+    table (features/build_dashboard_summaries.py) rather than joining the
+    324MB+ raw player_game_stats table live: keeps the dashboard fast and
+    keeps that huge table out of any cloud-hosted copy of the database
+    entirely (a free-tier Postgres host typically caps around 500MB)."""
+    return pd.read_sql("SELECT * FROM dashboard_back_to_back_fatigue ORDER BY sort_key", engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_load_vs_performance():
-    """Load quartile vs next-game TS%."""
-    return _read("load_vs_performance")
+    """Load quartile vs next-game TS% -- the chart version of
+    sql/analytics/05_load_vs_performance.sql, built on the already-
+    materialized player_game_features (a single windowed pass, not a
+    from-scratch rebuild)."""
+    return pd.read_sql("""
+        WITH ordered AS (
+            SELECT player_id, game_date, load_index, ts_pct,
+                   LEAD(ts_pct) OVER (PARTITION BY player_id ORDER BY game_date) AS next_ts_pct,
+                   NTILE(4) OVER (ORDER BY load_index) AS load_quartile
+            FROM player_game_features
+            WHERE load_index IS NOT NULL
+        )
+        SELECT load_quartile, COUNT(*) AS n,
+               ROUND(AVG(next_ts_pct)::numeric, 3) AS avg_next_game_ts_pct
+        FROM ordered
+        WHERE next_ts_pct IS NOT NULL
+        GROUP BY load_quartile
+        ORDER BY load_quartile
+    """, engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_aging_curve():
-    return _read("aging_curve")
+    """Chart version of sql/analytics/06_aging_curve.sql. Reads a
+    precomputed summary table (see load_back_to_back_fatigue's docstring
+    for why) instead of joining player_game_stats + games + players live."""
+    return pd.read_sql("SELECT * FROM dashboard_aging_curve ORDER BY age_at_season_start", engine)
 
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_decline_feature_importances():
-    path = DATA_DIR / "decline_feature_importances.parquet"
+    path = MODEL_DIR / "player_decline.joblib"
     if not path.exists():
         return None
-    return pd.read_parquet(path).sort_values("importance", ascending=True)
+    bundle = joblib.load(path)
+    model, features = bundle["model"], bundle["features"]
+    return pd.DataFrame({
+        "feature": features,
+        "importance": model.feature_importances_,
+    }).sort_values("importance", ascending=True)
 
 
 st.title("NBA Player Performance & Game Outcome Prediction System")
@@ -99,7 +168,7 @@ with tab_team:
     teams = load_teams()
 
     if team_features.empty:
-        st.info("No team feature data yet -- snapshot data missing.")
+        st.info("No team feature data yet -- run ingestion + features/build_features.py.")
     else:
         team_features = team_features.merge(teams, on="team_id", how="left")
         team_choice = st.selectbox(
@@ -159,7 +228,7 @@ with tab_player:
     player_features = load_player_features()
 
     if player_features.empty:
-        st.info("No player feature data yet -- snapshot data missing.")
+        st.info("No player feature data yet -- run ingestion + features/build_features.py.")
     else:
         player_features["decline_gap"] = (
             player_features["season_to_date_ts_pct"] - player_features["rolling_ts_pct"]
@@ -230,7 +299,8 @@ with tab_monitoring:
     log_df = load_monitoring_log()
 
     if log_df.empty:
-        st.info("No monitoring data in the snapshot.")
+        st.info("No monitoring data yet -- run monitoring/update_drift_log.py after some predictions "
+                "have been logged and their games completed.")
     else:
         all_models = sorted(log_df["model_name"].unique())
         st.markdown("**All models, weekly accuracy — compared**")
@@ -269,7 +339,7 @@ with tab_monitoring:
         st.markdown("**Player decline model — feature importances**")
         importances_df = load_decline_feature_importances()
         if importances_df is None:
-            st.info("No feature-importance snapshot found.")
+            st.info("No trained player_decline model found -- run models/train_player_decline.py.")
         else:
             fig_imp = px.bar(
                 importances_df, x="importance", y="feature", orientation="h",
@@ -289,7 +359,7 @@ with tab_league:
     metric_choice = st.radio("Aging curve metric", ["Points per game", "True Shooting %"], horizontal=True)
     aging_df = load_aging_curve()
     if aging_df.empty:
-        st.info("No aging-curve data in the snapshot.")
+        st.info("No aging-curve data yet -- run ingestion/enrich_player_bio.py to fill in player birth dates.")
     else:
         y_col = "league_avg_pts_at_age" if metric_choice == "Points per game" else "league_avg_ts_pct_at_age"
         fig_age = px.line(
