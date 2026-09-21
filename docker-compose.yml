@@ -18,33 +18,5 @@ services:
       timeout: 5s
       retries: 10
 
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    container_name: nba_analytics_api
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nba_admin}:${POSTGRES_PASSWORD:-nba_admin_pw}@postgres:5432/${POSTGRES_DB:-nba_analytics}
-    ports:
-      - "8000:8000"
-
-  dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile.dashboard
-    container_name: nba_analytics_dashboard
-    restart: unless-stopped
-    depends_on:
-      - api
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nba_admin}:${POSTGRES_PASSWORD:-nba_admin_pw}@postgres:5432/${POSTGRES_DB:-nba_analytics}
-      API_BASE_URL: http://api:8000
-    ports:
-      - "8501:8501"
-
 volumes:
   pg_data:

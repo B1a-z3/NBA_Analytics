@@ -5,13 +5,7 @@
 # nba_api, curl_cffi, fastapi/uvicorn, pytest, etc. for the ingestion and API
 # layers the dashboard never touches). Trims real build time on every deploy.
 #
-# Kept in sync with the pinned versions in the root requirements.txt.
 streamlit==1.35.0
 pandas==2.2.2
 plotly==5.22.0
-sqlalchemy==2.0.30
-psycopg2-binary==2.9.9
-python-dotenv==1.0.1
-joblib==1.4.2
-scikit-learn==1.4.2
-xgboost==2.0.3
+pyarrow==17.0.0

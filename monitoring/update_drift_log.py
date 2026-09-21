@@ -6,7 +6,7 @@ model version, and writes one row per (model, week) into
 model_monitoring_log. The Streamlit dashboard and the /monitoring/accuracy
 API endpoint both read from this table.
 
-Run (intended to be part of the nightly cron, see scripts/nightly_refresh.sh):
+Run:
     python monitoring/update_drift_log.py
 """
 import sys
