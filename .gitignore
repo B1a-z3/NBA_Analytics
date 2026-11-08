@@ -11,4 +11,4 @@ models/artifacts/
 .ipynb_checkpoints/
 logs/
 *.log
-.claude
+.claude/
